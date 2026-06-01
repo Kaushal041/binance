@@ -103,10 +103,19 @@ class BinanceClient:
         side: str,
         order_type: str,
         quantity: float,
-        price: Optional[float] = None
+        price: Optional[float] = None,
+        wait_for_execution: bool = True,
+        timeout_seconds: float = 5
     ) -> dict[str, any]:
         """
-        Place an order on Binance Futures Testnet.
+        Place an order on Binance Futures Testnet with execution details.
+
+        Binance Futures API returns immediately after order placement (Status: NEW)
+        before the order is actually executed. This method:
+        1. Places the order
+        2. Waits briefly for async processing (0.5s)
+        3. Fetches actual execution details
+        4. For MARKET orders, polls for up to 5 seconds for execution completion
 
         Args:
             symbol: Trading pair symbol (e.g., BTCUSDT)
@@ -114,9 +123,11 @@ class BinanceClient:
             order_type: Order type (MARKET or LIMIT)
             quantity: Order quantity
             price: Order price (required for LIMIT orders)
+            wait_for_execution: Wait for order to execute (default: True)
+            timeout_seconds: Polling timeout for MARKET orders (default: 5)
 
         Returns:
-            Order response data
+            Order response data with actual execution details
 
         Raises:
             BinanceClientException: If order placement fails
@@ -135,12 +146,43 @@ class BinanceClient:
             }
 
             if order_type == "LIMIT" and price is not None:
-                params["timeInForce"] = "GTC"  # Good-til-cancelled
+                params["timeInForce"] = "GTC"
                 params["price"] = price
 
+            # Step 1: Place the order (returns immediately with Status: NEW)
             response = self.client.futures_create_order(**params)
+            logger.info(f"Initial order response: Status={response.get('status')}, "
+                       f"ExecutedQty={response.get('executedQty')}, "
+                       f"AvgPrice={response.get('avgPrice')}")
 
-            logger.info(f"Order placed successfully: {response}")
+            if not wait_for_execution:
+                return response
+
+            # Step 2: Wait 0.5 seconds for async processing
+            time.sleep(0.5)
+
+            # Step 3: Fetch actual execution details
+            order_id = response.get("orderId")
+            try:
+                actual_response = self.client.futures_get_order(symbol=symbol, orderId=order_id)
+                logger.info(f"Fetched order details: Status={actual_response.get('status')}, "
+                           f"ExecutedQty={actual_response.get('executedQty')}, "
+                           f"AvgPrice={actual_response.get('avgPrice')}")
+                response = actual_response
+            except (BinanceAPIException, BinanceRequestException, Exception) as e:
+                logger.warning(f"Could not fetch order details: {str(e)}, using initial response")
+
+            # Step 4: For MARKET orders, poll until execution completes
+            if order_type == "MARKET" and wait_for_execution:
+                response = self._wait_for_order_execution(
+                    symbol=symbol,
+                    order_id=order_id,
+                    timeout_seconds=timeout_seconds
+                )
+
+            logger.info(f"Order completed: Status={response.get('status')}, "
+                       f"ExecutedQty={response.get('executedQty')}, "
+                       f"AvgPrice={response.get('avgPrice')}")
             return response
 
         except BinanceAPIException as e:
@@ -154,6 +196,82 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"Unexpected error placing order: {str(e)}")
             raise BinanceClientException(f"Order placement failed: {str(e)}")
+
+    def _wait_for_order_execution(
+        self,
+        symbol: str,
+        order_id: int,
+        timeout_seconds: float = 5,
+        poll_interval: float = 0.5
+    ) -> dict[str, any]:
+        """
+        Poll for MARKET order execution until completion or timeout.
+
+        MARKET orders on Binance Futures are executed asynchronously.
+        This method polls the order status repeatedly until:
+        - executedQty > 0 (order has been filled)
+        - status == 'FILLED' (order is fully filled)
+        - timeout is reached
+
+        Args:
+            symbol: Trading pair symbol
+            order_id: Order ID to monitor
+            timeout_seconds: Maximum polling duration (default: 5)
+            poll_interval: Time between polls in seconds (default: 0.5)
+
+        Returns:
+            Final order status data with execution details
+
+        Raises:
+            BinanceClientException: If polling fails (after retries)
+        """
+        start_time = time.time()
+        elapsed = 0
+        poll_count = 0
+
+        while elapsed < timeout_seconds:
+            try:
+                poll_count += 1
+                elapsed = time.time() - start_time
+
+                order_status = self.client.futures_get_order(symbol=symbol, orderId=order_id)
+                executed_qty = float(order_status.get("executedQty", 0))
+                status = order_status.get("status", "")
+
+                logger.debug(
+                    f"Poll #{poll_count} (elapsed: {elapsed:.2f}s): "
+                    f"Status={status}, ExecutedQty={executed_qty}"
+                )
+
+                # Order is filled if status is FILLED or quantity was executed
+                if status == "FILLED" or executed_qty > 0:
+                    logger.info(
+                        f"Order execution completed: "
+                        f"Status={status}, ExecutedQty={executed_qty}, "
+                        f"AvgPrice={order_status.get('avgPrice')}"
+                    )
+                    return order_status
+
+                # Wait before next poll
+                time.sleep(poll_interval)
+
+            except (BinanceAPIException, BinanceRequestException) as e:
+                logger.debug(f"Poll #{poll_count} API error: {str(e)}, retrying...")
+                time.sleep(poll_interval)
+            except Exception as e:
+                logger.warning(f"Unexpected error during polling: {str(e)}")
+                time.sleep(poll_interval)
+
+        # Timeout reached - fetch final status and return it
+        logger.warning(f"Order execution polling timed out after {timeout_seconds}s, fetching final status")
+        try:
+            final_order = self.client.futures_get_order(symbol=symbol, orderId=order_id)
+            logger.info(f"Final order status: Status={final_order.get('status')}, "
+                       f"ExecutedQty={final_order.get('executedQty')}")
+            return final_order
+        except Exception as e:
+            logger.error(f"Failed to fetch final order status: {str(e)}")
+            raise BinanceClientException(f"Failed to fetch final order status: {str(e)}")
 
     def get_order_status(self, symbol: str, order_id: int) -> dict[str, any]:
         """
