@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python cli.py --symbol BTCUSDT --side BUY --type MARKET --quantity 0.001)",
+      "Bash(pip install *)",
+      "Bash(pip list *)",
+      "Bash(python -c \"import binance; print\\(binance.__version__\\)\")",
+      "Bash(python -c \"from binance.cm_futures import CMFutures; print\\('CM available'\\)\")",
+      "Bash(python -c \"from binance.client import Client; print\\('Client available'\\)\")",
+      "Bash(python -c \"import binance; print\\(dir\\(binance\\)\\)\")",
+      "Bash(python *)"
+    ]
+  }
+}

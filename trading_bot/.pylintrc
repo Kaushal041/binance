@@ -1,0 +1,23 @@
+[MASTER]
+jobs=4
+persistent=yes
+
+[MESSAGES CONTROL]
+disable=fixme,missing-module-docstring,too-few-public-methods
+
+[FORMAT]
+max-line-length=100
+
+[VARIABLES]
+dummy-variables-rgx=_.*
+
+[BASIC]
+good-names=i,j,k,ex,Run,_,df,e
+
+[DESIGN]
+max-args=7
+max-attributes=10
+max-branches=12
+max-locals=15
+max-parents=7
+max-statements=50
